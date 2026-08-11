@@ -35,6 +35,38 @@ Quando aparecer `** Starting Apache **` nos logs, o site está pronto em:
 Faça login com o usuário/senha definidos em `MOODLE_USERNAME` /
 `MOODLE_PASSWORD` no `.env`.
 
+## Rodar em um VPS (para outras pessoas acessarem)
+
+Se você tem (ou vai criar) um VPS Ubuntu 22.04/24.04 com IP público, use o
+script `deploy-vps.sh`: ele instala o Docker, baixa o `docker-compose.yml`
+deste repositório, gera senhas aleatórias e sobe o Moodle já com a porta
+liberada no firewall.
+
+1. Crie o servidor (ex.: Hetzner CX22 ou DigitalOcean, ~2-4 GB de RAM,
+   Ubuntu 24.04 LTS) e anote o IP público.
+2. Acesse via SSH como root: `ssh root@SEU_IP`
+3. Rode:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/CalebeRezende/Livros-eletr-nica/claude/moodle-local-setup-7jz87m/moodle/deploy-vps.sh | bash
+   ```
+
+   (ajuste a URL para `main` depois que este branch for mesclado). Para
+   personalizar e-mail/nome do site/porta:
+
+   ```bash
+   MOODLE_EMAIL=voce@exemplo.com MOODLE_SITE_NAME="Meu Moodle" HTTP_PORT=8080 \
+     curl -fsSL https://raw.githubusercontent.com/CalebeRezende/Livros-eletr-nica/claude/moodle-local-setup-7jz87m/moodle/deploy-vps.sh | bash
+   ```
+
+4. Ao final, o script imprime a URL (`http://SEU_IP:8080`) e as
+   credenciais do administrador — é esse link que você compartilha com quem
+   for testar.
+
+Isso deixa o Moodle acessível por HTTP simples (sem certificado), o que é
+suficiente para teste. Para uso contínuo/produção, aponte um domínio para o
+IP e coloque um proxy reverso com HTTPS (ex. Caddy) na frente.
+
 ## Parar / reiniciar
 
 ```bash

@@ -1,0 +1,399 @@
+// Schema Prisma — Plataforma de Gerenciamento de Estágios de Licenciatura
+// Banco: PostgreSQL
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Autenticação (NextAuth / Auth.js — Prisma Adapter, database sessions)
+// ---------------------------------------------------------------------------
+
+enum UserRole {
+  PENDING        // recém-logado via Google, ainda sem papel definido
+  SUPER_ADMIN    // Secretaria de Educação
+  SCHOOL_ADMIN   // Direção / Coordenação da escola
+  SUPERVISOR     // Professor Supervisor / Preceptor
+  INTERN         // Estagiário
+}
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  role          UserRole  @default(PENDING)
+  active        Boolean   @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  accounts Account[]
+  sessions Session[]
+
+  // Perfis específicos (um usuário só preenche o perfil correspondente ao seu role)
+  supervisorProfile SupervisorProfile?
+  internProfile     InternProfile?
+
+  // Vínculos administrativos
+  schoolAdminOf   SchoolAdmin[]
+  invitesSent     Invite[]        @relation("InvitesSentBy")
+
+  @@index([role])
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// Convite usado pelo Admin da Escola para validar um Professor, e pelo
+// Super Admin para validar um Admin de Escola. O login continua sendo só
+// Google; o convite apenas pré-associa um e-mail a um role + escola.
+model Invite {
+  id        String   @id @default(cuid())
+  email     String
+  role      UserRole
+  schoolId  String?
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  school      School? @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+  invitedById String
+  invitedBy   User    @relation("InvitesSentBy", fields: [invitedById], references: [id])
+
+  @@index([email])
+  @@map("invites")
+}
+
+// ---------------------------------------------------------------------------
+// Escolas
+// ---------------------------------------------------------------------------
+
+enum SchoolShift {
+  MORNING
+  AFTERNOON
+  EVENING
+  FULL_TIME
+}
+
+model School {
+  id          String   @id @default(cuid())
+  name        String
+  inep        String?  @unique // código INEP, se aplicável
+  address     String
+  city        String
+  state       String
+  latitude    Float?
+  longitude   Float?
+  shifts      SchoolShift[]
+  infra       String?  @db.Text // observações de infraestrutura
+  active      Boolean  @default(true)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  admins       SchoolAdmin[]
+  supervisors  SupervisorProfile[]
+  offers       InternshipOffer[]
+  invites      Invite[]
+
+  @@map("schools")
+}
+
+// Relação N:N entre User (role SCHOOL_ADMIN) e School — permite um admin
+// gerenciar mais de uma unidade, se necessário.
+model SchoolAdmin {
+  id       String @id @default(cuid())
+  userId   String
+  schoolId String
+
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  school School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, schoolId])
+  @@map("school_admins")
+}
+
+// ---------------------------------------------------------------------------
+// Catálogos globais (mantidos pelo Super Admin)
+// ---------------------------------------------------------------------------
+
+// Campos de Experiência (BNCC Educação Infantil) e Áreas do Conhecimento
+// (BNCC Fund/Médio) tratados como um único catálogo hierárquico.
+enum KnowledgeAreaKind {
+  BNCC_EXPERIENCE_FIELD // ex: "O eu, o outro e o nós"
+  KNOWLEDGE_AREA        // ex: "Matemática", "Linguagens"
+}
+
+model KnowledgeArea {
+  id   String            @id @default(cuid())
+  kind KnowledgeAreaKind
+  name String
+  slug String            @unique
+
+  offers InternshipOfferKnowledgeArea[]
+
+  @@map("knowledge_areas")
+}
+
+enum EducationStageLevel {
+  EARLY_CHILDHOOD // Educação Infantil
+  ELEMENTARY_1    // Fundamental I
+  ELEMENTARY_2    // Fundamental II
+  HIGH_SCHOOL     // Ensino Médio
+  EJA             // Educação de Jovens e Adultos
+}
+
+model EducationStage {
+  id     String              @id @default(cuid())
+  level  EducationStageLevel
+  label  String              // ex: "3º ano - Fundamental I"
+  order  Int                 @default(0)
+
+  offers InternshipOffer[]
+
+  @@map("education_stages")
+}
+
+// ---------------------------------------------------------------------------
+// Professores / Preceptores
+// ---------------------------------------------------------------------------
+
+model SupervisorProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  bio            String? @db.Text
+  subjectArea    String? // disciplina/área que leciona
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  availabilities Availability[]
+  offers         InternshipOffer[]
+
+  @@map("supervisor_profiles")
+}
+
+model Availability {
+  id                  String            @id @default(cuid())
+  supervisorProfileId String
+  supervisorProfile   SupervisorProfile @relation(fields: [supervisorProfileId], references: [id], onDelete: Cascade)
+
+  weekday   Int         // 0 (domingo) a 6 (sábado)
+  shift     SchoolShift
+  startTime String      // "07:30"
+  endTime   String      // "11:30"
+
+  @@map("availabilities")
+}
+
+// ---------------------------------------------------------------------------
+// Estagiários
+// ---------------------------------------------------------------------------
+
+model InternProfile {
+  id     String @id @default(cuid())
+  userId String @unique
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  university      String
+  course          String  // ex: "Pedagogia", "Letras"
+  registrationId  String? // matrícula/RA
+  semester        Int?
+  phone           String?
+  preferredShifts SchoolShift[]
+  bio             String? @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  applications Application[]
+
+  @@map("intern_profiles")
+}
+
+// ---------------------------------------------------------------------------
+// Vagas / Ofertas de Estágio
+// ---------------------------------------------------------------------------
+
+enum OfferStatus {
+  DRAFT         // professor ainda editando
+  PENDING_SCHOOL_APPROVAL
+  OPEN          // aprovada, aceitando candidaturas
+  CLOSED        // preenchida ou encerrada manualmente
+  ARCHIVED
+}
+
+model InternshipOffer {
+  id String @id @default(cuid())
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  supervisorProfileId String
+  supervisorProfile   SupervisorProfile @relation(fields: [supervisorProfileId], references: [id], onDelete: Cascade)
+
+  title       String
+  description String      @db.Text // projetos em andamento, temas de interesse
+  shift       SchoolShift
+  slots       Int         @default(1) // número de vagas
+  status      OfferStatus @default(DRAFT)
+
+  educationStageId String
+  educationStage   EducationStage @relation(fields: [educationStageId], references: [id])
+
+  knowledgeAreas InternshipOfferKnowledgeArea[]
+  applications   Application[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([status])
+  @@map("internship_offers")
+}
+
+// N:N Oferta <-> Área do conhecimento / Campo de experiência
+model InternshipOfferKnowledgeArea {
+  offerId String
+  areaId  String
+
+  offer InternshipOffer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  area  KnowledgeArea   @relation(fields: [areaId], references: [id], onDelete: Cascade)
+
+  @@id([offerId, areaId])
+  @@map("internship_offer_knowledge_areas")
+}
+
+// ---------------------------------------------------------------------------
+// Candidaturas
+// ---------------------------------------------------------------------------
+
+enum ApplicationStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  CANCELLED
+  COMPLETED
+}
+
+model Application {
+  id String @id @default(cuid())
+
+  offerId String
+  offer   InternshipOffer @relation(fields: [offerId], references: [id], onDelete: Cascade)
+
+  internProfileId String
+  internProfile   InternProfile @relation(fields: [internProfileId], references: [id], onDelete: Cascade)
+
+  status        ApplicationStatus @default(PENDING)
+  coverMessage  String?           @db.Text
+  decidedAt     DateTime?
+  decisionNote  String?           @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  activityLogs ActivityLog[]
+  evaluations  Evaluation[]
+
+  @@unique([offerId, internProfileId])
+  @@index([status])
+  @@map("applications")
+}
+
+// ---------------------------------------------------------------------------
+// Diário de bordo / registro de frequência
+// ---------------------------------------------------------------------------
+
+model ActivityLog {
+  id            String      @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  date         DateTime
+  hours        Float
+  description  String  @db.Text
+  attachmentUrl String?
+
+  // Check-in por geolocalização (diferencial do produto — ver README)
+  checkInLat Float?
+  checkInLng Float?
+  checkInAt  DateTime?
+
+  createdAt DateTime @default(now())
+
+  @@index([applicationId, date])
+  @@map("activity_logs")
+}
+
+// ---------------------------------------------------------------------------
+// Avaliação final (professor <-> estagiário)
+// ---------------------------------------------------------------------------
+
+enum EvaluatorRole {
+  SUPERVISOR
+  INTERN
+}
+
+model Evaluation {
+  id            String      @id @default(cuid())
+  applicationId String
+  application   Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+
+  evaluatorRole EvaluatorRole
+  score         Int           // 1-5
+  feedback      String        @db.Text
+
+  createdAt DateTime @default(now())
+
+  @@map("evaluations")
+}
